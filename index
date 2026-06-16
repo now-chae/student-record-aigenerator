@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>세특 자동 생성기</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+    * { font-family: 'Noto Sans KR', sans-serif; }
+
+    :root {
+      --sky: #4A90D9;
+      --sky-light: #EBF4FF;
+      --sky-mid: #C8E0F8;
+      --green: #3DAB7A;
+      --green-light: #E8F7F0;
+      --red: #E05252;
+      --red-light: #FEECEC;
+      --ink: #1E2A3A;
+      --muted: #6B7A8D;
+      --line: #DDE4ED;
+      --bg: #F2F6FB;
+    }
+
+    body { background: var(--bg); color: var(--ink); }
+
+    #agent-id-input:focus { outline: none; border-color: var(--sky); box-shadow: 0 0 0 3px rgba(74,144,217,0.15); }
+
+    #drop-zone {
+      border: 2.5px dashed var(--sky-mid);
+      background: var(--sky-light);
+      transition: border-color 0.2s, background 0.2s;
+      cursor: pointer;
+    }
+    #drop-zone:hover, #drop-zone.dragover { border-color: var(--sky); background: #DAEEFF; }
+    #drop-zone.has-file { border-style: solid; border-color: var(--green); background: var(--green-light); }
+
+    #progress-bar { transition: width 0.4s ease; }
+
+    .student-card {
+      border: 1.5px solid var(--line);
+      background: #fff;
+      border-radius: 14px;
+      overflow: hidden;
+      transition: box-shadow 0.2s;
+    }
+    .student-card:hover { box-shadow: 0 4px 20px rgba(74,144,217,0.12); }
+
+    .copy-btn { transition: background 0.15s, color 0.15s; }
+    .copy-btn.copied { background: var(--green) !important; color: #fff !important; border-color: var(--green) !important; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid var(--sky-mid); border-top-color: var(--sky);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+    }
+
+    .step-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 50%;
+      font-size: 12px; font-weight: 700;
+      background: var(--sky); color: #fff; flex-shrink: 0;
+    }
+    .step-badge.done { background: var(--green); }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp 0.35s ease both; }
+
+    .records-text {
+      background: #F8FAFD; border: 1px solid var(--line); border-radius: 8px;
+      padding: 12px 14px; line-height: 1.75; font-size: 14.5px;
+      white-space: pre-wrap; word-break: keep-all;
+    }
+    .subject-badge {
+      display: inline-block; background: var(--sky-light); color: var(--sky);
+      border: 1px solid var(--sky-mid); border-radius: 20px;
+      padding: 3px 14px; font-size: 13px; font-weight: 600;
+    }
+    .section-disabled { opacity: 0.4; pointer-events: none; }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: var(--sky-mid); border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- 헤더 -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+    <div class="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl flex items-center justify-center text-white text-lg font-bold" style="background:var(--sky);">✏</div>
+        <div>
+          <div class="font-bold text-base leading-tight" style="color:var(--ink);">세특 자동 생성기</div>
+          <div class="text-xs" style="color:var(--muted);">PDF 업로드 한 번으로 학생별 세특 완성</div>
+        </div>
+      </div>
+      <div id="header-id-status" class="hidden text-xs px-3 py-1.5 rounded-full font-medium" style="background:var(--green-light);color:var(--green);">
+        ✅ Agent ID 저장됨
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-5 py-8 space-y-5">
+
+    <!-- Step 0: Agent ID 입력 -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="step-badge">🤖</span>
+        <h2 class="font-semibold text-base" style="color:var(--ink);">Agent ID 입력</h2>
+      </div>
+      <p class="text-xs mb-4 ml-8" style="color:var(--muted);">
+        관리자에게 받은 Agent ID를 입력하세요. 이 기기 브라우저에만 저장되며 외부로 전송되지 않습니다.
+      </p>
+
+      <div class="flex gap-2">
+        <div class="relative flex-1">
+          <input id="agent-id-input" type="password"
+            placeholder="Agent ID를 입력하세요"
+            class="w-full px-4 py-2.5 rounded-xl border text-sm transition-all"
+            style="border-color:var(--line);background:#FAFCFF;"
+            oninput="onAgentIdInput()"
+            onkeydown="if(event.key==='Enter') saveAgentId()" />
+          <button onclick="toggleIdVisibility()"
+            class="absolute right-3 top-1/2 -translate-y-1/2 text-base"
+            style="color:var(--muted);" id="toggle-id-vis">👁</button>
+        </div>
+        <button id="save-id-btn" onclick="saveAgentId()" disabled
+          class="px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          style="background:var(--sky);">저장</button>
+      </div>
+
+      <div id="id-saved-msg" class="hidden mt-3 flex items-center gap-2 text-sm px-3 py-2 rounded-lg" style="background:var(--green-light);color:var(--green);">
+        <span>✅</span>
+        <span class="font-medium">Agent ID가 저장되었습니다.</span>
+        <button onclick="clearAgentId()" class="ml-auto text-xs underline opacity-70 hover:opacity-100">삭제</button>
+      </div>
+
+      <div class="mt-3 text-xs rounded-lg px-3 py-2.5 flex gap-2" style="background:#F8FAFD;color:var(--muted);border:1px solid var(--line);">
+        <span>ℹ️</span>
+        <span>Agent ID는 이 기기의 브라우저 <strong>localStorage</strong>에만 저장됩니다. "삭제" 버튼으로 언제든 지울 수 있습니다.</span>
+      </div>
+    </section>
+
+    <!-- Step 1: 활동 내용 입력 -->
+    <section class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="step-badge">📝</span>
+        <h2 class="font-semibold text-base">수업 활동 입력</h2>
+      </div>
+
+      <p class="text-xs mb-3" style="color:var(--muted);">
+        수행평가 또는 수업 활동 내용을 입력하세요.
+      </p>
+
+      <textarea
+        id="activity-input"
+        rows="3"
+        placeholder="예) 우리 반 학생들이 좋아하는 계절을 조사하여 띠그래프로 나타내고 특징 설명하기"
+        class="w-full px-4 py-3 rounded-xl border text-sm"
+        style="border-color:var(--line);background:#FAFCFF;"
+      ></textarea>
+    </section>
+    
+    <!-- Step 2: PDF 업로드 -->
+    <section id="section-upload" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 section-disabled">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="step-badge">1</span>
+        <h2 class="font-semibold text-base" style="color:var(--ink);">수업 기록 PDF 업로드</h2>
+      </div>
+
+      <div id="drop-zone"
+           class="rounded-xl p-8 flex flex-col items-center justify-center gap-3 text-center select-none"
+           onclick="document.getElementById('file-input').click()"
+           ondragover="handleDragOver(event)"
+           ondragleave="handleDragLeave(event)"
+           ondrop="handleDrop(event)">
+        <div id="upload-icon" class="text-4xl">📄</div>
+        <div id="upload-label" class="font-medium text-sm" style="color:var(--sky);">여기를 클릭하거나 PDF를 끌어다 놓으세요</div>
+        <div class="text-xs" style="color:var(--muted);">수업 관찰 기록, 활동지, 평가지 등 PDF 파일</div>
+      </div>
+      <input type="file" id="file-input" accept=".pdf" class="hidden" onchange="handleFileSelect(event)" />
+
+      <div id="file-info" class="hidden mt-3 flex items-center gap-2 text-sm px-3 py-2 rounded-lg" style="background:var(--green-light);color:var(--green);">
+        <span>📎</span>
+        <span id="file-name" class="font-medium truncate"></span>
+        <span id="file-size" class="ml-auto text-xs opacity-70 whitespace-nowrap"></span>
+      </div>
+
+      <button id="generate-btn" onclick="startGeneration()" disabled
+        class="mt-4 w-full py-3 rounded-xl font-semibold text-white text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+        style="background:var(--sky);">세특 자동 생성 시작</button>
+    </section>
+
+    <!-- Step 3: 처리 중 -->
+    <section id="progress-section" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-6 fade-up">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="step-badge">2</span>
+        <h2 class="font-semibold text-base" style="color:var(--ink);">처리 중</h2>
+      </div>
+      <div class="space-y-3">
+        <div id="step-extract" class="flex items-center gap-3 text-sm" style="color:var(--muted);">
+          <div id="icon-extract" class="w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full border-2 border-current">○</div>
+          <span id="label-extract">PDF 텍스트 추출 중…</span>
+        </div>
+        <div id="step-session" class="flex items-center gap-3 text-sm" style="color:var(--muted);">
+          <div id="icon-session" class="w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full border-2 border-current">○</div>
+          <span id="label-session">AI 세션 연결 중…</span>
+        </div>
+        <div id="step-agent" class="flex items-center gap-3 text-sm" style="color:var(--muted);">
+          <div id="icon-agent" class="w-5 h-5 flex-shrink-0 flex items-center justify-center rounded-full border-2 border-current">○</div>
+          <span id="label-agent">AI가 세특 작성 중… (잠시 기다려 주세요)</span>
+        </div>
+      </div>
+      <div class="mt-4 rounded-full overflow-hidden h-2" style="background:var(--sky-light);">
+        <div id="progress-bar" class="h-2 rounded-full" style="width:0%;background:var(--sky);"></div>
+      </div>
+    </section>
+
+    <!-- 에러 -->
+    <div id="error-box" class="hidden rounded-xl px-5 py-4 text-sm fade-up" style="background:var(--red-light);color:var(--red);">
+      <div class="font-bold mb-1">⚠ 오류 발생</div>
+      <pre id="error-msg" style="white-space:pre-wrap;word-break:break-all;font-size:12px;font-family:inherit;margin:0;"></pre>
+    </div>
+
+    <!-- Step 4: 결과 -->
+    <section id="results-section" class="hidden fade-up">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-2">
+          <span class="step-badge done">✓</span>
+          <h2 class="font-semibold text-base" style="color:var(--ink);">생성 완료</h2>
+          <span id="subject-badge-display" class="subject-badge ml-2"></span>
+        </div>
+        <button id="copy-all-btn" onclick="copyAll()"
+          class="copy-btn flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border"
+          style="border-color:var(--sky);color:var(--sky);background:#fff;">
+          📋 전체 복사
+        </button>
+      </div>
+      <div class="text-xs mb-4 px-1" style="color:var(--muted);">
+        총 <strong id="student-count">0</strong>명의 세특이 생성되었습니다.
+      </div>
+      <div id="students-container" class="space-y-4"></div>
+      <button onclick="resetApp()"
+        class="mt-6 w-full py-2.5 rounded-xl text-sm font-semibold border-2"
+        style="border-color:var(--line);color:var(--muted);">
+        🔄 새 파일로 다시 생성
+      </button>
+    </section>
+
+  </main>
+
+  <footer class="text-center text-xs py-6" style="color:var(--muted);">선생님의 소중한 시간을 아껴드립니다 🍀</footer>
+
+<script>
+  const BASE_URL = "https://langbridge.kosac.laivdata.com";
+  const LS_KEY   = "세특_agent_id";
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+  let selectedFile = null;
+  let studentsData = [];
+
+  // ── 초기화 ──────────────────────────────────────────────────────────
+  window.addEventListener("DOMContentLoaded", () => {
+    const saved = localStorage.getItem(LS_KEY);
+    if (saved) {
+      document.getElementById("agent-id-input").value = saved;
+      showIdSaved();
+      unlockUpload();
+    }
+  });
+
+  // ── Agent ID 관련 ────────────────────────────────────────────────────
+  function onAgentIdInput() {
+    const val = document.getElementById("agent-id-input").value.trim();
+    document.getElementById("save-id-btn").disabled = !val;
+    document.getElementById("id-saved-msg").classList.add("hidden");
+    document.getElementById("header-id-status").classList.add("hidden");
+  }
+
+  function saveAgentId() {
+    const val = document.getElementById("agent-id-input").value.trim();
+    if (!val) return;
+    localStorage.setItem(LS_KEY, val);
+    showIdSaved();
+    unlockUpload();
+  }
+
+  function clearAgentId() {
+    localStorage.removeItem(LS_KEY);
+    document.getElementById("agent-id-input").value = "";
+    document.getElementById("save-id-btn").disabled = true;
+    document.getElementById("id-saved-msg").classList.add("hidden");
+    document.getElementById("header-id-status").classList.add("hidden");
+    lockUpload();
+  }
+
+  function showIdSaved() {
+    document.getElementById("id-saved-msg").classList.remove("hidden");
+    document.getElementById("header-id-status").classList.remove("hidden");
+    document.getElementById("save-id-btn").disabled = false;
+  }
+
+  function toggleIdVisibility() {
+    const input = document.getElementById("agent-id-input");
+    const btn   = document.getElementById("toggle-id-vis");
+    input.type  = input.type === "password" ? "text" : "password";
+    btn.textContent = input.type === "password" ? "👁" : "🙈";
+  }
+
+  function getAgentId() { return localStorage.getItem(LS_KEY) || ""; }
+
+  // ── 업로드 섹션 잠금/해제 ───────────────────────────────────────────
+  function unlockUpload() { document.getElementById("section-upload").classList.remove("section-disabled"); }
+  function lockUpload() {
+    document.getElementById("section-upload").classList.add("section-disabled");
+    document.getElementById("generate-btn").disabled = true;
+    selectedFile = null;
+    resetDropZone();
+  }
+
+  // ── 파일 처리 ───────────────────────────────────────────────────────
+  function handleDragOver(e) { e.preventDefault(); document.getElementById("drop-zone").classList.add("dragover"); }
+  function handleDragLeave()  { document.getElementById("drop-zone").classList.remove("dragover"); }
+  function handleDrop(e) {
+    e.preventDefault();
+    document.getElementById("drop-zone").classList.remove("dragover");
+    const file = e.dataTransfer.files[0];
+    file && file.type === "application/pdf" ? setFile(file) : showError("PDF 파일만 업로드할 수 있습니다.");
+  }
+  function handleFileSelect(e) { if (e.target.files[0]) setFile(e.target.files[0]); }
+  function setFile(file) {
+    selectedFile = file;
+    document.getElementById("drop-zone").classList.add("has-file");
+    document.getElementById("upload-icon").textContent  = "✅";
+    document.getElementById("upload-label").textContent = "파일이 선택되었습니다";
+    document.getElementById("upload-label").style.color = "var(--green)";
+    document.getElementById("file-info").classList.remove("hidden");
+    document.getElementById("file-name").textContent = file.name;
+    document.getElementById("file-size").textContent = formatSize(file.size);
+    document.getElementById("generate-btn").disabled = false;
+    hideError();
+  }
+  function formatSize(b) {
+    return b < 1048576 ? (b/1024).toFixed(1)+" KB" : (b/1048576).toFixed(1)+" MB";
+  }
+
+  // ── 메인 플로우 ─────────────────────────────────────────────────────
+  async function startGeneration() {
+    if (!selectedFile) return;
+    const agentId = getAgentId();
+    if (!agentId) {
+      showError("Agent ID를 먼저 입력하고 저장해 주세요.");
+      return;
+    }
+
+    hideError();
+    document.getElementById("generate-btn").disabled = true;
+    document.getElementById("results-section").classList.add("hidden");
+    showProgress();
+
+    try {
+      const activity = document.getElementById("activity-input").value.trim();
+
+      // 1. PDF 전체 텍스트 추출
+      setStep("extract", "active"); setProgress(10);
+      const fullText = await extractPdfText(selectedFile);
+      setStep("extract", "done");   setProgress(20);
+
+      // 2. 전체 데이터 구조화 (1단계: 학생별 구조화 — 전체 텍스트 한 번에)
+      setStep("session", "active"); setProgress(25);
+      const structureSessionId = await createSession(agentId);
+      setStep("session", "done");   setProgress(30);
+
+      setStep("agent", "active");
+      setStepLabel("agent", "학생 데이터 구조화 중…");
+      const structured = await runAgentRaw(structureSessionId, fullText, activity);
+      const students = extractField(structured, "students");
+      const subject  = extractField(structured, "subject") || "";
+      if (!students || !Array.isArray(students) || students.length === 0) {
+        throw new Error("학생 데이터 구조화 실패\n응답: " + JSON.stringify(structured).slice(0, 300));
+      }
+      console.log(`구조화 완료: ${students.length}명`);
+      setProgress(35);
+
+      // 3. 학생별 개별 호출
+      const allResults = [];
+      for (let i = 0; i < students.length; i++) {
+        const student = students[i];
+        const pct = 35 + Math.round(((i + 1) / students.length) * 60);
+        setProgress(pct);
+        setStepLabel("agent", `세특 작성 중… (${i+1}/${students.length}) ${student.student_name}`);
+
+        // 학생 1명 데이터만 JSON 문자열로 전달 (다른 학생 데이터 절대 섞이지 않음)
+        const studentInput = JSON.stringify(student);
+        const sessionId = await createSession(agentId);
+        const result = await runAgentRaw(sessionId, studentInput, activity);
+        const studentResult = extractStudentResult(result, student.student_name);
+
+        if (studentResult) {
+          allResults.push(studentResult);
+        } else {
+          console.warn(`${student.student_name} 세특 생성 실패, 건너뜀`);
+        }
+      }
+
+      setStepDone("agent");
+      setProgress(100);
+
+      // 4. 중복 검열
+      const checked = deduplicateRecords(allResults);
+
+      setTimeout(() => {
+        hideProgress();
+        renderResults({ subject, students: checked });
+        document.getElementById("generate-btn").disabled = false;
+      }, 400);
+
+    } catch (err) {
+      hideProgress();
+      showError(err.message || "알 수 없는 오류가 발생했습니다.");
+      document.getElementById("generate-btn").disabled = false;
+    }
+  }
+
+  // ── 중복 검열 ───────────────────────────────────────────────────────
+  // records 문장이 다른 학생 것과 70% 이상 겹치면 경고 표시
+  function deduplicateRecords(students) {
+    const allSentences = []; // {text, studentName, recordIdx}
+
+    students.forEach(s => {
+      (s.records || []).forEach((rec, idx) => {
+        allSentences.push({ text: rec, studentName: s.student_name, recordIdx: idx });
+      });
+    });
+
+    // 유사도 체크 (공통 어절 비율)
+    function similarity(a, b) {
+      const wordsA = new Set(a.replace(/[.,。]/g, "").split(/\s+/));
+      const wordsB = new Set(b.replace(/[.,。]/g, "").split(/\s+/));
+      const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
+      return intersection / Math.max(wordsA.size, wordsB.size);
+    }
+
+    const duplicates = new Set(); // "studentName:recordIdx"
+    for (let i = 0; i < allSentences.length; i++) {
+      for (let j = i + 1; j < allSentences.length; j++) {
+        const a = allSentences[i];
+        const b = allSentences[j];
+        if (a.studentName === b.studentName) continue;
+        if (similarity(a.text, b.text) >= 0.7) {
+          // 뒤에 나온 쪽에 중복 표시
+          duplicates.add(`${b.studentName}:${b.recordIdx}`);
+          console.warn(`중복 감지: [${a.studentName}] ↔ [${b.studentName}] "${a.text.slice(0, 30)}…"`);
+        }
+      }
+    }
+
+    // 중복된 records에 경고 태그 추가
+    return students.map(s => ({
+      ...s,
+      records: (s.records || []).map((rec, idx) => {
+        const key = `${s.student_name}:${idx}`;
+        return duplicates.has(key) ? `⚠️ [중복 의심] ${rec}` : rec;
+      })
+    }));
+  }
+
+  // ── API 호출 ─────────────────────────────────────────────────────────
+  async function createSession(agentId) {
+    const res = await fetch(`${BASE_URL}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId })
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`세션 생성 실패 (${res.status})\n${detail}`);
+    }
+    const data = await res.json();
+    if (!data.sessionId) throw new Error("세션 ID를 받지 못했습니다.\n응답: " + JSON.stringify(data).slice(0, 200));
+    return data.sessionId;
+  }
+
+  async function runAgentRaw(sessionId, userInput, activity) {
+    const res = await fetch(`${BASE_URL}/agents/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, query: { userInput, activity } })
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`AI 실행 실패 (${res.status})\n${detail}`);
+    }
+    const data = await res.json();
+    console.log("RESPONSE:", JSON.stringify(data).slice(0, 200));
+    return data;
+  }
+
+  // 응답에서 특정 필드 추출 (중첩 구조 대응)
+  function extractField(data, field) {
+    if (data?.[field] !== undefined) return data[field];
+    if (data?.params?.response?.[field] !== undefined) return data.params.response[field];
+    if (data?.response?.[field] !== undefined) return data.response[field];
+    if (data?.response?.response?.[field] !== undefined) return data.response.response[field];
+    if (data?.data?.[field] !== undefined) return data.data[field];
+    if (data?.result?.[field] !== undefined) return data.result[field];
+    return undefined;
+  }
+
+  // 학생 1명 세특 결과 추출
+  // LangBridge output 키: "record" → 내부 schema 키: "records"
+  function extractStudentResult(data, studentName) {
+    const candidates = [
+      data?.params?.record,      // 주요 경로: params.record.records
+      data?.record,              // 직접 경로: record.records
+      data?.params?.response,
+      data?.response?.record,
+      data?.response,
+      data?.data?.record,
+      data?.data,
+      data?.result?.record,
+      data?.result,
+      data,
+    ];
+    for (const c of candidates) {
+      if (!c) continue;
+      const recs = c?.records;
+      if (recs && Array.isArray(recs) && recs.length > 0) {
+        return {
+          student_name: c.student_name || studentName,
+          subject: c.subject || "",
+          records: recs
+        };
+      }
+    }
+    console.warn("extractStudentResult 실패. 전체 응답:", JSON.stringify(data).slice(0, 300));
+    return null;
+  }
+
+  function setStepDone(key) { setStep(key, "done"); }
+  function setStepLabel(key, label) {
+    const el = document.getElementById(`label-${key}`);
+    if (el) el.textContent = label;
+  }
+
+    // ── 결과 렌더링 ─────────────────────────────────────────────────────
+  function renderResults(response) {
+    studentsData = response.students || [];
+    const subject = response.subject || "";
+
+    document.getElementById("subject-badge-display").textContent = subject ? `📚 ${subject}` : "";
+    document.getElementById("student-count").textContent = studentsData.length;
+
+    const container = document.getElementById("students-container");
+    container.innerHTML = "";
+    studentsData.forEach((s, idx) => {
+      const card = document.createElement("div");
+      card.className = "student-card fade-up";
+      card.style.animationDelay = `${idx * 0.07}s`;
+      card.innerHTML = `
+        <div class="flex items-center justify-between px-5 py-3 border-b" style="border-color:var(--line);background:#FAFCFF;">
+          <div class="flex items-center gap-2">
+            <span>👤</span>
+            <span class="font-bold text-base">${esc(s.student_name)}</span>
+            <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--sky-light);color:var(--sky);">${idx+1}번</span>
+          </div>
+          <button class="copy-btn px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                  style="border-color:var(--sky);color:var(--sky);background:#fff;"
+                  onclick="copyOne(${idx},this)">복사</button>
+        </div>
+        <div class="px-5 py-4">
+          <div class="record-text">${esc((s.records || []).join(' '))}</div>
+        </div>`;
+      container.appendChild(card);
+    });
+
+    document.getElementById("results-section").classList.remove("hidden");
+    document.getElementById("results-section").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ── 복사 ────────────────────────────────────────────────────────────
+  function copyOne(idx, btn) {
+    const s = studentsData[idx];
+    clip(`[${s.student_name}]\n${(s.records||[]).join(' ')}`, btn, "복사 완료!");
+  }
+  function copyAll() {
+    clip(studentsData.map(s => `[${s.student_name}]\n${(s.records||[]).join(' ')}`).join("\n\n"),
+         document.getElementById("copy-all-btn"), "전체 복사 완료!");
+  }
+  function clip(text, btn, label) {
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = btn.innerHTML;
+      btn.classList.add("copied");
+      btn.innerHTML = `✓ ${label}`;
+      setTimeout(() => { btn.classList.remove("copied"); btn.innerHTML = orig; }, 2000);
+    }).catch(() => showError("클립보드 복사에 실패했습니다."));
+  }
+
+  // ── 진행 UI ─────────────────────────────────────────────────────────
+  function showProgress() {
+    document.getElementById("progress-section").classList.remove("hidden");
+    document.getElementById("progress-section").scrollIntoView({ behavior: "smooth" });
+  }
+  function hideProgress() { document.getElementById("progress-section").classList.add("hidden"); }
+  function setProgress(p) { document.getElementById("progress-bar").style.width = p + "%"; }
+  function setStep(key, state) {
+    const el   = document.getElementById(`step-${key}`);
+    const icon = document.getElementById(`icon-${key}`);
+    if (state === "active") {
+      el.style.color = "var(--sky)";
+      icon.innerHTML = `<span class="spinner"></span>`;
+    } else {
+      el.style.color = "var(--green)";
+      icon.textContent = "✓";
+      icon.style.borderColor = "var(--green)";
+    }
+  }
+
+  // ── 에러 ────────────────────────────────────────────────────────────
+  function showError(msg) {
+    document.getElementById("error-msg").textContent = msg;
+    document.getElementById("error-box").classList.remove("hidden");
+  }
+  function hideError() { document.getElementById("error-box").classList.add("hidden"); }
+
+  // ── 리셋 ────────────────────────────────────────────────────────────
+  function resetApp() {
+    selectedFile = null; studentsData = [];
+    resetDropZone();
+    document.getElementById("file-input").value = "";
+    document.getElementById("generate-btn").disabled = true;
+    document.getElementById("results-section").classList.add("hidden");
+    hideProgress(); hideError();
+    ["extract","session","agent"].forEach(k => {
+      document.getElementById(`step-${k}`).style.color = "var(--muted)";
+      const icon = document.getElementById(`icon-${k}`);
+      icon.textContent = "○"; icon.style.borderColor = "";
+    });
+    setProgress(0);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function resetDropZone() {
+    document.getElementById("drop-zone").classList.remove("has-file","dragover");
+    document.getElementById("upload-icon").textContent  = "📄";
+    document.getElementById("upload-label").textContent = "여기를 클릭하거나 PDF를 끌어다 놓으세요";
+    document.getElementById("upload-label").style.color = "var(--sky)";
+    document.getElementById("file-info").classList.add("hidden");
+  }
+
+  function esc(str) {
+    return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+</script>
+</body>
+</html>
