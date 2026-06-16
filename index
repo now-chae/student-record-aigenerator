@@ -473,6 +473,43 @@
     }));
   }
 
+  // ── PDF 추출 + 전처리 ──────────────────────────────────────────────
+  async function extractPdfText(file) {
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    let text = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const cont = await page.getTextContent();
+      text += cont.items.map(it => it.str).join(" ") + "\n";
+    }
+    if (!text.trim()) throw new Error("PDF에서 텍스트를 추출할 수 없습니다. 스캔 이미지 PDF는 지원되지 않습니다.");
+
+    // 1. 학교명/날짜/IP/성명 워터마크 제거
+    text = text.replace(/\S+\/\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}\/[\S]+\/[가-힣]+\s*/g, "");
+    // 2. 날짜 단독 표현 제거
+    text = text.replace(/\d{4}\.\d{2}\.\d{2}\.?\s*/g, "");
+    // 3. "N학년도 N학년 N반 교과평가..." 헤더 제거
+    text = text.replace(/\d{4}학년도\s*\d+학년\s*\d+반\s*교과평가\S*\s*/g, "");
+    // 4. 페이지 번호 제거
+    text = text.replace(/\d{1,2}\s+\d{1,2}\s*\/\s*/g, "");
+    // 5. 반복 헤더 제거
+    text = text.replace(/반\/번호\s*성명\s*영역\s*성취기준\s*평가요소\s*단계(\s*평가결과)?\s*/g, "");
+    // 6. 학교명 제거
+    text = text.replace(/[가-힣]+초등학교\s*/g, "");
+    // 7. 중복 학생 블록 제거
+    const seenStudents = new Set();
+    text = text.replace(/(\d{1,2})\s+([가-힣]{2,4})\s+(표현|미적\s*체험|감상)/g, (match, num, name, area) => {
+      const key = `${num}_${name}`;
+      if (seenStudents.has(key)) return area;
+      seenStudents.add(key);
+      return match;
+    });
+    // 8. 연속 공백/빈 줄 정리
+    text = text.replace(/[ \t]{3,}/g, "  ").replace(/\n{3,}/g, "\n\n").trim();
+    console.log("전처리 완료:", text.length, "자");
+    return text;
+  }
+
   // ── API 호출 ─────────────────────────────────────────────────────────
   async function createSession(agentId) {
     const res = await fetch(`${BASE_URL}/sessions`, {
