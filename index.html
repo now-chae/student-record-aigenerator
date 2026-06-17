@@ -374,43 +374,47 @@
       const fullText = await extractPdfText(selectedFile);
       setStep("extract", "done");   setProgress(20);
 
-      // 2. 전체 데이터 구조화 (1단계: 학생별 구조화 — 전체 텍스트 한 번에)
-      setStep("session", "active"); setProgress(25);
-      const structureSessionId = await createSession(agentId);
-      setStep("session", "done");   setProgress(30);
-
-      setStep("agent", "active");
-      setStepLabel("agent", "학생 데이터 구조화 중…");
-      const structured = await runAgentRaw(structureSessionId, fullText, activity);
-      const students = extractField(structured, "students");
-      const subject  = extractField(structured, "subject") || "";
-      if (!students || !Array.isArray(students) || students.length === 0) {
-        throw new Error("학생 데이터 구조화 실패\n응답: " + JSON.stringify(structured).slice(0, 300));
+      // 2. 학생 블록 파싱 (번호+이름 패턴으로 분리)
+      const studentBlocks = parseStudentBlocks(fullText);
+      if (studentBlocks.length === 0) {
+        throw new Error("학생 데이터를 찾을 수 없습니다. PDF를 확인해 주세요.");
       }
-      console.log(`구조화 완료: ${students.length}명`);
-      setProgress(35);
+      console.log(`학생 ${studentBlocks.length}명 파싱 완료`);
 
-      // 3. 학생별 개별 호출
+      // 3. 학생별 개별 에이전트 호출
+      setStep("session", "active");
+      setStep("agent",   "active");
       const allResults = [];
-      for (let i = 0; i < students.length; i++) {
-        const student = students[i];
-        const pct = 35 + Math.round(((i + 1) / students.length) * 60);
+      let subject = "";
+
+      for (let i = 0; i < studentBlocks.length; i++) {
+        const block = studentBlocks[i];
+        const pct = 20 + Math.round(((i + 1) / studentBlocks.length) * 75);
         setProgress(pct);
-        setStepLabel("agent", `세특 작성 중… (${i+1}/${students.length}) ${student.student_name}`);
+        setStepLabel("session", `AI 세션 연결 중… (${i+1}/${studentBlocks.length})`);
+        setStepLabel("agent",   `세특 작성 중… (${i+1}/${studentBlocks.length}) ${block.name}`);
 
-        // 학생 1명 데이터만 JSON 문자열로 전달 (다른 학생 데이터 절대 섞이지 않음)
-        const studentInput = JSON.stringify(student);
-        const sessionId = await createSession(agentId);
-        const result = await runAgentRaw(sessionId, studentInput, activity);
-        const studentResult = extractStudentResult(result, student.student_name);
-
-        if (studentResult) {
-          allResults.push(studentResult);
-        } else {
-          console.warn(`${student.student_name} 세특 생성 실패, 건너뜀`);
+        try {
+          const sessionId = await createSession(agentId);
+          // 학생 1명 데이터만 전달 — 다른 학생 데이터 절대 섞이지 않음
+          const result = await runAgentRaw(sessionId, block.text, activity);
+          const studentResult = extractStudentResult(result, block.name);
+          if (studentResult) {
+            if (studentResult.subject) subject = studentResult.subject;
+            allResults.push(studentResult);
+          } else {
+            console.warn(`${block.name} 세특 생성 실패, 건너뜀`);
+          }
+        } catch (err) {
+          console.warn(`${block.name} 오류:`, err.message);
         }
       }
 
+      if (allResults.length === 0) {
+        throw new Error("세특 생성에 실패했습니다. 에이전트 설정을 확인해 주세요.");
+      }
+
+      setStepDone("session");
       setStepDone("agent");
       setProgress(100);
 
@@ -430,7 +434,37 @@
     }
   }
 
-  // ── 중복 검열 ───────────────────────────────────────────────────────
+  // ── 학생 블록 파싱 ──────────────────────────────────────────────────
+  // PDF 전처리된 텍스트에서 학생별 블록을 분리
+  function parseStudentBlocks(text) {
+    const blocks = [];
+    // "번호 이름 영역" 패턴으로 학생 시작점 찾기
+    const pattern = /(\d{1,2})\s+([가-힣]{2,4})\s+(?:표현|미적\s*체험|감상|국어|수학|사회|과학|영어|음악|미술|체육|도덕|실과|창의|안전)/g;
+    const matches = [];
+    let m;
+    while ((m = pattern.exec(text)) !== null) {
+      matches.push({ index: m.index, num: m[1], name: m[2] });
+    }
+
+    // 중복 제거 (같은 번호+이름은 첫 번째만)
+    const seen = new Set();
+    const unique = matches.filter(m => {
+      const key = `${m.num}_${m.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // 각 학생 블록 텍스트 추출
+    unique.forEach((u, i) => {
+      const end = i + 1 < unique.length ? unique[i + 1].index : text.length;
+      blocks.push({ name: u.name, num: u.num, text: text.slice(u.index, end).trim() });
+    });
+
+    return blocks;
+  }
+
+    // ── 중복 검열 ───────────────────────────────────────────────────────
   // records 문장이 다른 학생 것과 70% 이상 겹치면 경고 표시
   function deduplicateRecords(students) {
     const allSentences = []; // {text, studentName, recordIdx}
@@ -541,44 +575,77 @@
     return data;
   }
 
-  // 응답에서 특정 필드 추출 (중첩 구조 대응)
+  // 응답에서 특정 필드 추출 (중첩 구조 + _toolCallResults 대응)
   function extractField(data, field) {
-    if (data?.[field] !== undefined) return data[field];
-    if (data?.params?.response?.[field] !== undefined) return data.params.response[field];
-    if (data?.response?.[field] !== undefined) return data.response[field];
-    if (data?.response?.response?.[field] !== undefined) return data.response.response[field];
-    if (data?.data?.[field] !== undefined) return data.data[field];
-    if (data?.result?.[field] !== undefined) return data.result[field];
+    // 직접 경로
+    const directPaths = [
+      data,
+      data?.params?.response,
+      data?.params,
+      data?.response?.response,
+      data?.response,
+      data?.data,
+      data?.result,
+    ];
+    for (const obj of directPaths) {
+      if (obj?.[field] !== undefined) return obj[field];
+    }
+
+    // _toolCallResults 안에서 탐색
+    const toolResults = data?._toolCallResults;
+    if (toolResults && typeof toolResults === "object") {
+      for (const key of Object.keys(toolResults)) {
+        const val = toolResults[key];
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            if (item?.[field] !== undefined) return item[field];
+          }
+        } else if (val?.[field] !== undefined) {
+          return val[field];
+        }
+      }
+    }
     return undefined;
   }
 
   // 학생 1명 세특 결과 추출
-  // LangBridge output 키: "record" → 내부 schema 키: "records"
+  // 확인된 응답 구조: { record: { student_name, subject, records: [...] } }
   function extractStudentResult(data, studentName) {
-    const candidates = [
-      data?.params?.record,      // 주요 경로: params.record.records
-      data?.record,              // 직접 경로: record.records
-      data?.params?.response,
-      data?.response?.record,
-      data?.response,
-      data?.data?.record,
-      data?.data,
-      data?.result?.record,
-      data?.result,
-      data,
-    ];
-    for (const c of candidates) {
-      if (!c) continue;
-      const recs = c?.records;
-      if (recs && Array.isArray(recs) && recs.length > 0) {
-        return {
-          student_name: c.student_name || studentName,
-          subject: c.subject || "",
-          records: recs
-        };
+    // 모든 가능한 경로에서 records 배열 탐색
+    const tryExtract = (obj) => {
+      if (!obj || typeof obj !== "object") return null;
+      if (Array.isArray(obj.records) && obj.records.length > 0) {
+        return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: obj.records };
+      }
+      return null;
+    };
+
+    // 1. 확인된 주요 경로: data.record
+    const r1 = tryExtract(data?.record); if (r1) return r1;
+    // 2. 중첩 경로들
+    const r2 = tryExtract(data?.params?.record); if (r2) return r2;
+    const r3 = tryExtract(data?.response?.record); if (r3) return r3;
+    const r4 = tryExtract(data?.params?.response); if (r4) return r4;
+    const r5 = tryExtract(data?.response); if (r5) return r5;
+    const r6 = tryExtract(data); if (r6) return r6;
+
+    // 3. _toolCallResults 순회
+    const toolResults = data?._toolCallResults;
+    if (toolResults && typeof toolResults === "object") {
+      for (const key of Object.keys(toolResults)) {
+        const val = toolResults[key];
+        const rv = tryExtract(val); if (rv) return rv;
+        const rv2 = tryExtract(val?.record); if (rv2) return rv2;
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            const ri = tryExtract(item); if (ri) return ri;
+            const ri2 = tryExtract(item?.record); if (ri2) return ri2;
+          }
+        }
       }
     }
-    console.warn("extractStudentResult 실패. 전체 응답:", JSON.stringify(data).slice(0, 300));
+
+    console.warn("extractStudentResult 실패. 응답:", JSON.stringify(data).slice(0, 400));
     return null;
   }
 
