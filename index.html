@@ -608,44 +608,74 @@
     return undefined;
   }
 
-  // 학생 1명 세특 결과 추출
-  // 확인된 응답 구조: { record: { student_name, subject, records: [...] } }
+  // 학생 1명 세특 결과 추출 - 응답 구조 전체 탐색
   function extractStudentResult(data, studentName) {
-    // 모든 가능한 경로에서 records 배열 탐색
+    console.log("FULL RESPONSE 파싱 시도:", JSON.stringify(data).slice(0, 800));
+
+    // records 배열 또는 record 문자열을 가진 객체 추출
     const tryExtract = (obj) => {
-      if (!obj || typeof obj !== "object") return null;
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+
+      // records 배열인 경우
       if (Array.isArray(obj.records) && obj.records.length > 0) {
         return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: obj.records };
+      }
+      // record 단일 문자열인 경우 → 배열로 감싸기
+      if (typeof obj.record === "string" && obj.record.trim()) {
+        return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: [obj.record] };
       }
       return null;
     };
 
-    // 1. 확인된 주요 경로: data.record
-    const r1 = tryExtract(data?.record); if (r1) return r1;
-    // 2. 중첩 경로들
-    const r2 = tryExtract(data?.params?.record); if (r2) return r2;
-    const r3 = tryExtract(data?.response?.record); if (r3) return r3;
-    const r4 = tryExtract(data?.params?.response); if (r4) return r4;
-    const r5 = tryExtract(data?.response); if (r5) return r5;
-    const r6 = tryExtract(data); if (r6) return r6;
+    // 가능한 모든 경로 시도
+    const paths = [
+      data?.record,
+      data?.params?.record,
+      data?.response?.record,
+      data?.params?.response?.record,
+      data?.params?.response,
+      data?.response?.response,
+      data?.response,
+      data?.params,
+      data,
+    ];
+    for (const p of paths) {
+      const r = tryExtract(p);
+      if (r) return r;
+    }
 
-    // 3. _toolCallResults 순회
+    // _toolCallResults 순회
     const toolResults = data?._toolCallResults;
     if (toolResults && typeof toolResults === "object") {
       for (const key of Object.keys(toolResults)) {
         const val = toolResults[key];
-        const rv = tryExtract(val); if (rv) return rv;
-        const rv2 = tryExtract(val?.record); if (rv2) return rv2;
+        for (const p of [val, val?.record, val?.response, val?.params?.record]) {
+          const r = tryExtract(p); if (r) return r;
+        }
         if (Array.isArray(val)) {
           for (const item of val) {
-            const ri = tryExtract(item); if (ri) return ri;
-            const ri2 = tryExtract(item?.record); if (ri2) return ri2;
+            const r = tryExtract(item) || tryExtract(item?.record);
+            if (r) return r;
           }
         }
       }
     }
 
-    console.warn("extractStudentResult 실패. 응답:", JSON.stringify(data).slice(0, 400));
+    // 마지막 수단: 객체 전체를 재귀 탐색
+    function deepSearch(obj, depth = 0) {
+      if (depth > 5 || !obj || typeof obj !== "object") return null;
+      const r = tryExtract(obj);
+      if (r) return r;
+      for (const key of Object.keys(obj)) {
+        const r2 = deepSearch(obj[key], depth + 1);
+        if (r2) return r2;
+      }
+      return null;
+    }
+    const deep = deepSearch(data);
+    if (deep) return deep;
+
+    console.warn("extractStudentResult 최종 실패. 전체 응답:", JSON.stringify(data).slice(0, 1000));
     return null;
   }
 
