@@ -646,17 +646,25 @@
   function extractStudentResult(data, studentName) {
     console.log("FULL RESPONSE 파싱 시도:", JSON.stringify(data).slice(0, 800));
 
-    // records 배열 또는 record 문자열을 가진 객체 추출
+    // records 배열 또는 record_1/2/3 고정 필드 또는 record 단일 문자열을 가진 객체 추출
     const tryExtract = (obj) => {
       if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+      const name = obj.student_name || studentName;
+      const subj = obj.subject || "";
 
-      // records 배열인 경우
-      if (Array.isArray(obj.records) && obj.records.length > 0) {
-        return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: obj.records };
+      // record_1/2/3 고정 필드 구조 → 빈 문자열 제거 후 배열로
+      if (obj.record_1 !== undefined) {
+        const records = [obj.record_1, obj.record_2, obj.record_3]
+          .filter(r => typeof r === "string" && r.trim() !== "");
+        if (records.length > 0) return { student_name: name, subject: subj, records };
       }
-      // record 단일 문자열인 경우 → 배열로 감싸기
+      // records 배열 구조
+      if (Array.isArray(obj.records) && obj.records.length > 0) {
+        return { student_name: name, subject: subj, records: obj.records };
+      }
+      // record 단일 문자열 구조
       if (typeof obj.record === "string" && obj.record.trim()) {
-        return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: [obj.record] };
+        return { student_name: name, subject: subj, records: [obj.record] };
       }
       return null;
     };
