@@ -266,7 +266,7 @@
 
   let selectedFile = null;
   let studentsData = [];
-  let studentBlocks = []; // 전역으로 재생성 시 재사용
+  let studentBlocks = [];
 
   // ── 초기화 ──────────────────────────────────────────────────────────
   window.addEventListener("DOMContentLoaded", () => {
@@ -415,54 +415,34 @@
         throw new Error("세특 생성에 실패했습니다. 에이전트 설정을 확인해 주세요.");
       }
 
-      setStepDone("session");
-      setStepDone("agent");
-      setProgress(100);
-
-      // 4. 중복 검열 + 재생성 (최대 3라운드)
+      // 4. 중복 검열 → 중복 학생 재생성 (최대 3라운드)
       setStepLabel("agent", "중복 문장 검사 중…");
-      const MAX_ROUNDS = 3;
       let finalResults = allResults;
+      const MAX_ROUNDS = 3;
 
       for (let round = 1; round <= MAX_ROUNDS; round++) {
-        const duplicates = findDuplicates(finalResults);
-        if (duplicates.size === 0) {
+        const dupStudents = findDuplicateStudents(finalResults);
+        if (dupStudents.size === 0) {
           console.log(`라운드 ${round}: 중복 없음 → 완료`);
           break;
         }
-
-        console.log(`라운드 ${round}: 중복 학생 재생성 시작`, [...duplicates]);
+        console.log(`라운드 ${round}: 재생성 대상`, [...dupStudents]);
         setStepLabel("agent", `중복 문장 재생성 중… (${round}/${MAX_ROUNDS}라운드)`);
 
-        // 중복된 학생만 재생성
         for (let i = 0; i < finalResults.length; i++) {
           const s = finalResults[i];
-          if (!duplicates.has(s.student_name)) continue;
+          if (!dupStudents.has(s.student_name)) continue;
 
           const block = studentBlocks.find(b => b.name === s.student_name);
           if (!block) continue;
 
-          setStepLabel("agent", `재생성 중… ${s.student_name} (${round}라운드)`);
-          setProgress(95);
-
+          setStepLabel("agent", `재생성 중… ${s.student_name}`);
           try {
-            // 기존 학생들의 세특을 컨텍스트로 넘겨 중복 방지
-            const prevRecords = finalResults
-              .filter(r => r.student_name !== s.student_name)
-              .map(r => `[${r.student_name}] ${(r.records||[]).join(' ')}`)
-              .join('
-');
-
-            const enrichedActivity = activity +
-              `
-
-[중복 방지 지시] 아래는 이미 작성된 다른 학생들의 세특입니다. 반드시 다른 표현과 구조를 사용하세요:
-${prevRecords}`;
-
             const sessionId = await createSession(agentId);
-            const result = await runAgentRaw(sessionId, block.text, enrichedActivity);
+            const result = await runAgentRaw(sessionId, block.text, activity);
             const newResult = extractStudentResult(result, block.name);
             if (newResult) {
+              if (newResult.subject) subject = newResult.subject;
               finalResults[i] = newResult;
               console.log(`${s.student_name} 재생성 완료`);
             }
@@ -471,6 +451,10 @@ ${prevRecords}`;
           }
         }
       }
+
+      setStepDone("session");
+      setStepDone("agent");
+      setProgress(100);
 
       setTimeout(() => {
         hideProgress();
@@ -488,8 +472,7 @@ ${prevRecords}`;
   // ── 학생 블록 파싱 ──────────────────────────────────────────────────
   function parseStudentBlocks(text) {
     const blocks = [];
-
-    // "번호 이름" 패턴 (뒤에 영역 없어도 됨) - 더 넓게 잡기
+    // "번호 이름" 패턴 — 영역 없이도 인식 (페이지 경계 잘림 대응)
     const pattern = /(?<![가-힣\d])(\d{1,2})\s+([가-힣]{2,4})(?=\s)/g;
     const matches = [];
     let m;
@@ -497,77 +480,65 @@ ${prevRecords}`;
       matches.push({ index: m.index, num: parseInt(m[1]), name: m[2] });
     }
 
-    // 번호 순서대로 정렬 후 중복 제거 (같은 번호+이름은 첫 번째만)
-    matches.sort((a, b) => a.index - b.index);
+    // 번호가 순서대로 증가하는 것만 유효 학생으로 인정 (중복 헤더 제거)
     const seen = new Set();
-    const unique = matches.filter(m => {
-      const key = `${m.num}_${m.name}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    // 번호가 연속적인지 검증 (1,2,3... 순서 맞는 것만)
-    // 번호가 이전보다 작아지면 중복 헤더로 판단
-    const validated = [];
     let lastNum = 0;
-    for (const u of unique) {
-      if (u.num > lastNum || u.num === lastNum + 1 || validated.length === 0) {
-        if (u.num >= lastNum) {
-          validated.push(u);
-          lastNum = u.num;
-        }
-      }
+    const unique = [];
+    for (const match of matches) {
+      const key = `${match.num}_${match.name}`;
+      if (seen.has(key)) continue;           // 같은 학생 두 번 나오면 첫 번째만
+      if (match.num < lastNum) continue;     // 번호가 역행하면 헤더로 간주
+      seen.add(key);
+      unique.push(match);
+      lastNum = match.num;
     }
 
     // 각 학생 블록 텍스트 추출
-    validated.forEach((u, i) => {
-      const end = i + 1 < validated.length ? validated[i + 1].index : text.length;
+    unique.forEach((u, i) => {
+      const end = i + 1 < unique.length ? unique[i + 1].index : text.length;
       const blockText = text.slice(u.index, end).trim();
-      if (blockText.length > 10) { // 너무 짧은 블록 제외
+      if (blockText.length > 10) {
         blocks.push({ name: u.name, num: u.num, text: blockText });
       }
     });
 
-    console.log("파싱된 학생 블록:", blocks.map(b => `${b.num}번 ${b.name}(${b.text.length}자)`));
+    console.log("파싱된 학생:", blocks.map(b => `${b.num}번 ${b.name}(${b.text.length}자)`).join(", "));
     return blocks;
   }
 
-    // ── 중복 검열 ───────────────────────────────────────────────────────
-  // records 문장이 다른 학생 것과 70% 이상 겹치면 경고 표시
-  function deduplicateRecords(students) {
-    const allSentences = []; // {text, studentName, recordIdx}
+  // ── 중복 학생 탐색 ─────────────────────────────────────────────────
+  // 유사도 70% 이상인 문장을 가진 뒷 번호 학생 이름 Set 반환
+  function findDuplicateStudents(students) {
+    const dupNames = new Set();
+    const allSentences = [];
 
     students.forEach(s => {
-      (s.records || []).forEach((rec, idx) => {
-        allSentences.push({ text: rec, studentName: s.student_name, recordIdx: idx });
+      (s.records || []).forEach(rec => {
+        allSentences.push({ text: rec, studentName: s.student_name });
       });
     });
 
-    // 유사도 체크 (공통 어절 비율)
     function similarity(a, b) {
-      const wordsA = new Set(a.replace(/[.,。]/g, "").split(/\s+/));
-      const wordsB = new Set(b.replace(/[.,。]/g, "").split(/\s+/));
-      const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
-      return intersection / Math.max(wordsA.size, wordsB.size);
+      const wa = new Set(a.replace(/[.,。]/g, "").split(/\s+/).filter(w => w.length > 1));
+      const wb = new Set(b.replace(/[.,。]/g, "").split(/\s+/).filter(w => w.length > 1));
+      const inter = [...wa].filter(w => wb.has(w)).length;
+      return inter / Math.max(wa.size, wb.size);
     }
 
-    const duplicates = new Set(); // "studentName:recordIdx"
     for (let i = 0; i < allSentences.length; i++) {
       for (let j = i + 1; j < allSentences.length; j++) {
-        const a = allSentences[i];
-        const b = allSentences[j];
+        const a = allSentences[i], b = allSentences[j];
         if (a.studentName === b.studentName) continue;
         if (similarity(a.text, b.text) >= 0.7) {
-          // 뒤에 나온 쪽에 중복 표시
-          duplicates.add(`${b.studentName}:${b.recordIdx}`);
-          console.warn(`중복 감지: [${a.studentName}] ↔ [${b.studentName}] "${a.text.slice(0, 30)}…"`);
+          // 뒷 번호(인덱스 큰 쪽) 학생이 재생성 대상
+          const idxA = students.findIndex(s => s.student_name === a.studentName);
+          const idxB = students.findIndex(s => s.student_name === b.studentName);
+          dupNames.add(idxA > idxB ? a.studentName : b.studentName);
+          console.warn(`중복: [${a.studentName}] ↔ [${b.studentName}] "${a.text.slice(0, 30)}…"`);
         }
       }
     }
-
-    // (이 함수는 더 이상 직접 호출 안 함 - findDuplicates로 대체)
-    return students;
+    return dupNames;
   }
 
   // ── PDF 추출 + 전처리 ──────────────────────────────────────────────
@@ -671,81 +642,75 @@ ${prevRecords}`;
     return undefined;
   }
 
-  // 학생 1명 세특 결과 추출
-  // 확인된 응답 구조: { record: { student_name, subject, records: [...] } }
+  // 학생 1명 세특 결과 추출 - 응답 구조 전체 탐색
   function extractStudentResult(data, studentName) {
-    // 모든 가능한 경로에서 records 배열 탐색
+    console.log("FULL RESPONSE 파싱 시도:", JSON.stringify(data).slice(0, 800));
+
+    // records 배열 또는 record 문자열을 가진 객체 추출
     const tryExtract = (obj) => {
-      if (!obj || typeof obj !== "object") return null;
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+
+      // records 배열인 경우
       if (Array.isArray(obj.records) && obj.records.length > 0) {
         return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: obj.records };
+      }
+      // record 단일 문자열인 경우 → 배열로 감싸기
+      if (typeof obj.record === "string" && obj.record.trim()) {
+        return { student_name: obj.student_name || studentName, subject: obj.subject || "", records: [obj.record] };
       }
       return null;
     };
 
-    // 1. 확인된 주요 경로: data.record
-    const r1 = tryExtract(data?.record); if (r1) return r1;
-    // 2. 중첩 경로들
-    const r2 = tryExtract(data?.params?.record); if (r2) return r2;
-    const r3 = tryExtract(data?.response?.record); if (r3) return r3;
-    const r4 = tryExtract(data?.params?.response); if (r4) return r4;
-    const r5 = tryExtract(data?.response); if (r5) return r5;
-    const r6 = tryExtract(data); if (r6) return r6;
+    // 가능한 모든 경로 시도
+    const paths = [
+      data?.record,
+      data?.params?.record,
+      data?.response?.record,
+      data?.params?.response?.record,
+      data?.params?.response,
+      data?.response?.response,
+      data?.response,
+      data?.params,
+      data,
+    ];
+    for (const p of paths) {
+      const r = tryExtract(p);
+      if (r) return r;
+    }
 
-    // 3. _toolCallResults 순회
+    // _toolCallResults 순회
     const toolResults = data?._toolCallResults;
     if (toolResults && typeof toolResults === "object") {
       for (const key of Object.keys(toolResults)) {
         const val = toolResults[key];
-        const rv = tryExtract(val); if (rv) return rv;
-        const rv2 = tryExtract(val?.record); if (rv2) return rv2;
+        for (const p of [val, val?.record, val?.response, val?.params?.record]) {
+          const r = tryExtract(p); if (r) return r;
+        }
         if (Array.isArray(val)) {
           for (const item of val) {
-            const ri = tryExtract(item); if (ri) return ri;
-            const ri2 = tryExtract(item?.record); if (ri2) return ri2;
+            const r = tryExtract(item) || tryExtract(item?.record);
+            if (r) return r;
           }
         }
       }
     }
 
-    console.warn("extractStudentResult 실패. 응답:", JSON.stringify(data).slice(0, 400));
-    return null;
-  }
-
-  // 중복 학생 이름 Set 반환 (뒷 번호 학생 기준)
-  function findDuplicates(students) {
-    const duplicateNames = new Set();
-    const allSentences = [];
-
-    students.forEach(s => {
-      (s.records || []).forEach((rec, idx) => {
-        allSentences.push({ text: rec, studentName: s.student_name, idx });
-      });
-    });
-
-    function similarity(a, b) {
-      const wordsA = new Set(a.replace(/[.,。]/g, "").split(/\s+/).filter(w => w.length > 1));
-      const wordsB = new Set(b.replace(/[.,。]/g, "").split(/\s+/).filter(w => w.length > 1));
-      const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
-      return intersection / Math.max(wordsA.size, wordsB.size);
-    }
-
-    for (let i = 0; i < allSentences.length; i++) {
-      for (let j = i + 1; j < allSentences.length; j++) {
-        const a = allSentences[i];
-        const b = allSentences[j];
-        if (a.studentName === b.studentName) continue;
-        if (similarity(a.text, b.text) >= 0.7) {
-          // 뒤에 나온 학생(인덱스 기준)에 중복 표시
-          const idxA = students.findIndex(s => s.student_name === a.studentName);
-          const idxB = students.findIndex(s => s.student_name === b.studentName);
-          const laterName = idxA > idxB ? a.studentName : b.studentName;
-          duplicateNames.add(laterName);
-          console.warn(`중복 감지: [${a.studentName}] ↔ [${b.studentName}] "${a.text.slice(0, 30)}…" → ${laterName} 재생성 대상`);
-        }
+    // 마지막 수단: 객체 전체를 재귀 탐색
+    function deepSearch(obj, depth = 0) {
+      if (depth > 5 || !obj || typeof obj !== "object") return null;
+      const r = tryExtract(obj);
+      if (r) return r;
+      for (const key of Object.keys(obj)) {
+        const r2 = deepSearch(obj[key], depth + 1);
+        if (r2) return r2;
       }
+      return null;
     }
-    return duplicateNames;
+    const deep = deepSearch(data);
+    if (deep) return deep;
+
+    console.warn("extractStudentResult 최종 실패. 전체 응답:", JSON.stringify(data).slice(0, 1000));
+    return null;
   }
 
   function setStepDone(key) { setStep(key, "done"); }
